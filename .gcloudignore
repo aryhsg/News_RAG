@@ -1,0 +1,16 @@
+.venv/ venv/ env/
+
+pycache/ *.pyc *.pyd *.pyo
+
+.vscode/ .idea/
+
+.env
+
+*.db *.sqlite
+
+.git .gitignore
+
+*.tar.gz *.zip
+
+.gcloudignore
+
