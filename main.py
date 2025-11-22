@@ -267,7 +267,9 @@ async def curl_news_and_upload():
 
 
 
-
+@app.get("/awake/")
+def read_root():
+    return {"status": "OK"}
     
 
     
