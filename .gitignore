@@ -216,3 +216,8 @@ __marimo__/
 *.pkl
 *.bin
 .env
+
+# Ignore Python compiled files
+*.pyc
+# Ignore the cache directory
+__pycache__/

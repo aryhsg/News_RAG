@@ -27,59 +27,46 @@ CHUNK_SIZE = 300
 CHUNK_OVERLAP = 50
 
 # =======================================================================================
-def split_content_fixed(news_content_dict: Dict[str, str], metadata_dict: Dict[str, Any]) -> List[Document]:
+def split_content(news):
     text_spliter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
         separators=["\n\n", "。", "?", "!", " ", "", "."],
         length_function=len,
         is_separator_regex=False
-    )
+        )
 
-    # 修正傳參：直接傳遞 content 文本和 metadata 字典
     chunks = text_spliter.create_documents(
-        texts=[news_content_dict["content"]],
-        metadatas=[metadata_dict]
+        texts=[news[0]["content"]],
+        metadatas=[news[1]]
     )
-
-    for i, doc in enumerate(chunks):
-        doc.metadata['chunk_index'] = i
-
     return chunks
+
 # =======================================================================================
 def transform_datastruct_and_split(news_data):
     news_urls = news_data["data"]["url"]
     news_titles = news_data["data"]["title"]
     news_contents = news_data["data"]["content"]
-    
-    # 更改：news_list 現在用於收集所有文章的所有分塊 (Document 物件)
-    all_chunks_list: List[Document] = [] 
-    
+    news_list = []
     for i in range(len(news_urls)):
-        # 1. 準備 news 和 metadata
-        news_content_dict = {"content": news_contents[i]}
-        metadata_dict = {
-            "date": taipei_date.isoformat(), # 建議將 date 轉為字串以確保 JSON/Dict 兼容性
+        # news = [news:dict, metadata:dict]
+        news = [
+            {
+            "content": news_contents[i]
+            },
+            {
+            "date": taipei_date,
             "url": news_urls[i],
             "title": news_titles[i]
-        }
-        
-        # 2. 執行切塊 (回傳 List[Document])
-        # 我們需要將內容和 metadata 分開傳遞給 split_content
-        # 修正 split_content 傳參方式，更清晰
-        news_chunks: List[Document] = split_content_fixed(news_content_dict, metadata_dict)
-        
-        # 3. 【關鍵修正點】使用 extend() 將所有分塊 Document 加入總列表
-        all_chunks_list.extend(news_chunks)
-        
-    # 4. 轉換為 List[Dict] 結構 (將 Document 展開)
-    # 這一部分移到這裡執行，可以避免在迴圈內反覆操作
-    final_list = [
-        {"content": doc.page_content, "metadata": doc.metadata}
-        for doc in all_chunks_list
-    ]
+            }
+                ]
+        news_chunks = split_content(news) # news_chunks = [[page_content,metadata], [page_content,metadata], [page_content,metadata], ...]
+        news = {"content": news_chunks[0].page_content, "metadata": news_chunks[1].metadata}
+        #news_list.append(news_chunks) # new_list = [news_chunks, news_chunks, news_chunks, ...]
+        #all_news_chunks = sum(news_chunks, []) # 所有news_chunks集合成一個列表 [[page_content,metadata], [page_content,metadata], [page_content,metadata], ...]
+        news_list.append(news)
+    return news_list
 
-    return final_list
 # =======================================================================================
 class SupabaseUploader:
     """
@@ -119,46 +106,33 @@ class SupabaseUploader:
 
 
     def _transform_to_vector(self, contents: List[str]) -> List[List[float]]:
-            """內部方法：批量呼叫 Gemini API 轉換文本為向量，並處理 API 的批次限制。"""
-            if not self.gemini_client:
-                return []
-                
-            MAX_BATCH_SIZE = 100  # Gemini API 的限制
-            all_vectors: List[List[float]] = []
-            total_contents = len(contents)
+        """內部方法：批量呼叫 Gemini API 轉換文本為向量。"""
+        if not self.gemini_client:
+            return []
             
-            print(f"-> 總共有 {total_contents} 篇文本需要轉換。")
+        print(f"-> 正在呼叫 Gemini API 轉換 {len(contents)} 篇文本...")
+        
+        try:
+            response = self.gemini_client.models.embed_content(
+                model=self.embedding_model,
+                contents=contents
+            )
+        except APIError as e:
+            print(f"🔴 錯誤：Gemini API 呼叫失敗: {e}")
+            return []
+        
+        # 提取 'values' 列表並回傳
+        # 確保回傳的是 List[List[float]]
+        vectors: List[List[float]] = [
+            e.values for e in response.embeddings if hasattr(e, 'values')
+        ]
+        
+        if len(vectors) != len(contents):
+             print(f"⚠️ 警告: 向量數量 ({len(vectors)}) 與輸入文本數量 ({len(contents)}) 不符。")
 
-            # 使用迴圈將總內容分割成多個小批次
-            for i in range(0, total_contents, MAX_BATCH_SIZE):
-                # 確定當前批次的起始和結束索引
-                batch_contents = contents[i:i + MAX_BATCH_SIZE]
-                batch_num = (i // MAX_BATCH_SIZE) + 1
-                print(f"-> 正在處理批次 {batch_num} (數量: {len(batch_contents)})...")
+        print(f"-> 成功轉換 {len(vectors)} 個向量。")
+        return vectors
 
-                try:
-                    response = self.gemini_client.models.embed_content(
-                        model=self.embedding_model,
-                        contents=batch_contents
-                    )
-                except APIError as e:
-                    print(f"🔴 錯誤：批次 {batch_num} Gemini API 呼叫失敗: {e}")
-                    # 如果某個批次失敗，您可以選擇跳過該批次或直接返回
-                    return [] 
-                
-                # 將當前批次的向量加入總列表
-                batch_vectors: List[List[float]] = [
-                    e.values for e in response.embeddings if hasattr(e, 'values')
-                ]
-                
-                if len(batch_vectors) != len(batch_contents):
-                    print(f"⚠️ 警告: 批次 {batch_num} 的向量數量 ({len(batch_vectors)}) 與輸入文本數量 ({len(batch_contents)}) 不符。")
-                    # 這裡可能需要更嚴格的錯誤處理，以確保數據和向量是對齊的。
-                
-                all_vectors.extend(batch_vectors)
-
-            print(f"-> 成功轉換 {len(all_vectors)} 個向量（分 {batch_num} 批次）。")
-            return all_vectors
     
     def upload_data(self, news_data: List[list[str, dict]], table_name: str = "news") -> None: # (self, news_data: List[Dict[str, str]], table_name: str = "news")
         """
@@ -191,7 +165,6 @@ class SupabaseUploader:
                 # 建立要插入的單行資料字典
                 insert_row = {
                     "url": news["metadata"]["url"],
-                    "chunk_index": news["metadata"]["chunk_index"],
                     "content": news["content"],
                     "metadata": news["metadata"],
                     "embedding": vectors_list[i] # 插入 List[float]
@@ -203,7 +176,7 @@ class SupabaseUploader:
         try:
             supa_response = (
                 self.supabase.table(table_name)
-                .upsert(insert_rows, on_conflict="url,chunk_index")
+                .upsert(insert_rows, on_conflict="url")
                 .execute()
             )
             # Supabase SDK 回傳的 response 是一個 PostgrestAPIResponse 物件
